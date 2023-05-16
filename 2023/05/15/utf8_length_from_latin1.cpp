@@ -10,10 +10,8 @@ uint64_t nano() {
       .count();
 }
 
-
-
-__attribute__((noinline))
-size_t scalar_utf8_length(const uint8_t *c, size_t len) {
+__attribute__((noinline)) size_t scalar_utf8_length(const uint8_t *c,
+                                                    size_t len) {
   size_t answer = 0;
   for (size_t i = 0; i < len; i++) {
     if ((c[i] >> 7)) {
@@ -24,8 +22,8 @@ size_t scalar_utf8_length(const uint8_t *c, size_t len) {
 }
 
 // from https://github.com/nodejs/node/pull/48009#issuecomment-1547344694
-__attribute__((noinline))
-uint64_t utf8_length_kvakil(const uint8_t *data, uint32_t length) {
+__attribute__((noinline)) uint64_t utf8_length_kvakil(const uint8_t *data,
+                                                      uint32_t length) {
   uint64_t result = 0;
   const int lanes = sizeof(uint8x16_t);
   uint8_t rem = length % lanes;
@@ -51,8 +49,8 @@ uint64_t utf8_length_kvakil(const uint8_t *data, uint32_t length) {
   return result + length;
 }
 
-__attribute__((noinline))
-uint64_t utf8_length_faster(const uint8_t *data, uint32_t length) {
+__attribute__((noinline)) uint64_t utf8_length_faster(const uint8_t *data,
+                                                      uint32_t length) {
   uint64_t result = 0;
   const int lanes = sizeof(uint8x16_t);
   uint8_t rem = length % lanes;
@@ -73,17 +71,18 @@ uint64_t utf8_length_faster(const uint8_t *data, uint32_t length) {
   return result + length;
 }
 
-__attribute__((noinline))
-uint64_t utf8_length_shift(const uint8_t *data, uint32_t length) {
+__attribute__((noinline)) uint64_t utf8_length_shift(const uint8_t *data,
+                                                     uint32_t length) {
   uint64_t result = length;
-  
-  while(length >= 64) {
+
+  while (length >= 64) {
     uint8x16_t acc1, acc2, acc3, acc4;
     acc1 = acc2 = acc3 = acc4 = vdupq_n_u8(0);
     unsigned iters = length / 64;
-    if(iters > 255) iters = 255;
+    if (iters > 255)
+      iters = 255;
     length -= 64 * iters;
-    while(iters--) {
+    while (iters--) {
       acc1 = vsraq_n_u8(acc1, vld1q_u8(data), 7);
       acc2 = vsraq_n_u8(acc2, vld1q_u8(data + 16), 7);
       acc3 = vsraq_n_u8(acc3, vld1q_u8(data + 32), 7);
@@ -96,7 +95,7 @@ uint64_t utf8_length_shift(const uint8_t *data, uint32_t length) {
     sum1 = vaddq_u16(sum1, sum2);
     result += vaddvq_u16(sum1);
   }
-  
+
   // scalar tail
   for (uint8_t j = 0; j < length; j++) {
     result += (data[j] >> 7);
@@ -104,8 +103,8 @@ uint64_t utf8_length_shift(const uint8_t *data, uint32_t length) {
   return result;
 }
 
-__attribute__((noinline))
-uint64_t utf8_length_strager(const uint8_t *data, uint32_t length) {
+__attribute__((noinline)) uint64_t utf8_length_strager(const uint8_t *data,
+                                                       uint32_t length) {
   uint64_t result = 0;
 
   const int simd_lanes = sizeof(uint8x16_t);
@@ -126,8 +125,8 @@ uint64_t utf8_length_strager(const uint8_t *data, uint32_t length) {
   return result + length;
 }
 
-__attribute__((noinline))
-uint64_t utf8_length_strager_sra(const uint8_t *data, uint32_t length) {
+__attribute__((noinline)) uint64_t utf8_length_strager_sra(const uint8_t *data,
+                                                           uint32_t length) {
   uint64_t result = 0;
 
   const int simd_lanes = sizeof(uint8x16_t);
@@ -251,7 +250,7 @@ int main() {
   size_t warm_trials = 1'000'000;
   //size_t warm_trials = 1'000;
 
-  size_t N = 8000*2;
+  size_t N = 8000 * 2;
   uint8_t *input = new uint8_t[N];
   for (size_t i = 0; i < N; i++) {
     input[i] = rand();
@@ -267,7 +266,7 @@ int main() {
     uint64_t after = nano();
     if (t >= warm_trials) {
       std::cout << "ns/bytes " << double(after - before) / (len) << std::endl;
-      std::cout << "GB/s " << (len)/double(after - before) << std::endl;
+      std::cout << "GB/s " << (len) / double(after - before) << std::endl;
     }
   }
   if (len != expected) {
@@ -284,8 +283,7 @@ int main() {
     uint64_t after = nano();
     if (t >= warm_trials) {
       std::cout << "ns/bytes " << double(after - before) / (len) << std::endl;
-      std::cout << "GB/s " << (len)/double(after - before) << std::endl;
-
+      std::cout << "GB/s " << (len) / double(after - before) << std::endl;
     }
   }
   if (len != expected) {
@@ -301,8 +299,7 @@ int main() {
     uint64_t after = nano();
     if (t >= warm_trials) {
       std::cout << "ns/bytes " << double(after - before) / (len) << std::endl;
-      std::cout << "GB/s " << (len)/double(after - before) << std::endl;
-
+      std::cout << "GB/s " << (len) / double(after - before) << std::endl;
     }
   }
   if (len != expected) {
@@ -318,8 +315,7 @@ int main() {
     uint64_t after = nano();
     if (t >= warm_trials) {
       std::cout << "ns/bytes " << double(after - before) / (len) << std::endl;
-      std::cout << "GB/s " << (len)/double(after - before) << std::endl;
-
+      std::cout << "GB/s " << (len) / double(after - before) << std::endl;
     }
   }
   if (len != expected) {
@@ -335,7 +331,7 @@ int main() {
     uint64_t after = nano();
     if (t >= warm_trials) {
       std::cout << "ns/bytes " << double(after - before) / (len) << std::endl;
-      std::cout << "GB/s " << (len)/double(after - before) << std::endl;
+      std::cout << "GB/s " << (len) / double(after - before) << std::endl;
     }
   }
   if (len != expected) {
@@ -351,7 +347,7 @@ int main() {
     uint64_t after = nano();
     if (t >= warm_trials) {
       std::cout << "ns/bytes " << double(after - before) / (len) << std::endl;
-      std::cout << "GB/s " << (len)/double(after - before) << std::endl;
+      std::cout << "GB/s " << (len) / double(after - before) << std::endl;
     }
   }
   if (len != expected) {
@@ -367,7 +363,7 @@ int main() {
     uint64_t after = nano();
     if (t >= warm_trials) {
       std::cout << "ns/bytes " << double(after - before) / (len) << std::endl;
-      std::cout << "GB/s " << (len)/double(after - before) << std::endl;
+      std::cout << "GB/s " << (len) / double(after - before) << std::endl;
     }
   }
   if (len != expected) {
@@ -383,7 +379,7 @@ int main() {
     uint64_t after = nano();
     if (t >= warm_trials) {
       std::cout << "ns/bytes " << double(after - before) / (len) << std::endl;
-      std::cout << "GB/s " << (len)/double(after - before) << std::endl;
+      std::cout << "GB/s " << (len) / double(after - before) << std::endl;
     }
   }
   if (len != expected) {
