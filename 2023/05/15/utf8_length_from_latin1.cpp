@@ -30,6 +30,7 @@ size_t scalar_utf8_length(const uint8_t *c, size_t len) {
   return answer + len;
 }
 // from https://github.com/nodejs/node/pull/48009#issuecomment-1547344694
+__attribute__((noinline))
 uint64_t utf8_length_kvakil(const uint8_t *data, uint32_t length) {
   uint64_t result = 0;
   const int lanes = sizeof(uint8x16_t);
@@ -56,9 +57,152 @@ uint64_t utf8_length_kvakil(const uint8_t *data, uint32_t length) {
   return result + length;
 }
 
+__attribute__((noinline))
+uint64_t utf8_length_strager(const uint8_t *data, uint32_t length) {
+  uint64_t result = 0;
+
+  const int simd_lanes = sizeof(uint8x16_t);
+
+  const uint8_t *simd_end = data + (length / simd_lanes) * simd_lanes;
+  uint32_t length_after_simd = length % simd_lanes;
+  for (; data < simd_end; data += simd_lanes) {
+    uint8x16_t chunk = vld1q_u8(data);
+    uint8x16_t high_bits = vshrq_n_u8(chunk, 7);
+    result += vaddvq_u8(high_bits);
+  }
+
+  const uint8_t *scalar_end = data + length_after_simd;
+  for (; data < scalar_end; data += 1) {
+    result += *data >> 7;
+  }
+
+  return result + length;
+}
+
+__attribute__((noinline))
+uint64_t utf8_length_strager_sra(const uint8_t *data, uint32_t length) {
+  uint64_t result = 0;
+
+  const int simd_lanes = sizeof(uint8x16_t);
+  const int max_sra_count = 256 / simd_lanes;  // Avoid overflowing vaddvq_u8.
+
+  const uint8_t *simd_end = data + (length / simd_lanes) * simd_lanes;
+  uint32_t length_after_simd = length % simd_lanes;
+  for (; data < simd_end; ) {
+    uint8x16_t acc = {};
+    int i = 0;
+    for (; data < simd_end && i < max_sra_count; data += simd_lanes, ++i) {
+      uint8x16_t chunk = vld1q_u8(data);
+      acc = vsraq_n_u8(acc, chunk, 7);
+    }
+    result += vaddvq_u8(acc);
+  }
+
+  const uint8_t *scalar_end = data + length_after_simd;
+  for (; data < scalar_end; data += 1) {
+    result += *data >> 7;
+  }
+
+  return result + length;
+}
+
+__attribute__((noinline))
+uint64_t utf8_length_strager_sra_unrolled(const uint8_t *data, uint32_t length) {
+  uint64_t result = 0;
+
+  const int simd_lanes = sizeof(uint8x16_t);
+  const int max_sra_count = 256 / simd_lanes;  // Avoid overflowing vaddvq_u8.
+  const int unrolls = max_sra_count;
+  const int unrolled_lanes = simd_lanes * unrolls;
+
+  const uint8_t *unroll_end = data + (length / unrolled_lanes) * unrolled_lanes;
+  uint32_t length_after_unroll = length % unrolled_lanes;
+  for (; data < unroll_end; ) {
+    uint8x16_t acc = {};
+    for (int i = 0; i < unrolls; ++i, data += simd_lanes) {
+      uint8x16_t chunk = vld1q_u8(data);
+      acc = vsraq_n_u8(acc, chunk, 7);
+    }
+    result += vaddvq_u8(acc);
+  }
+
+  const uint8_t *simd_end = data + (length_after_unroll / simd_lanes) * simd_lanes;
+  uint32_t length_after_simd = length % simd_lanes;
+  uint8x16_t acc = {};
+  for (; data < simd_end; data += simd_lanes) {
+    uint8x16_t chunk = vld1q_u8(data);
+    acc = vsraq_n_u8(acc, chunk, 7);
+  }
+  result += vaddvq_u8(acc);
+
+  const uint8_t *scalar_end = data + length_after_simd;
+  for (; data < scalar_end; data += 1) {
+    result += *data >> 7;
+  }
+
+  return result + length;
+}
+
+__attribute__((noinline))
+uint64_t utf8_length_strager_sra_unrolled_multiacc(const uint8_t *data, uint32_t length) {
+  uint64_t result = 0;
+
+  const int simd_lanes = sizeof(uint8x16_t);
+  const int max_sra_count = 256 / simd_lanes;  // Avoid overflowing vaddvq_u8.
+  constexpr int acc_count = 4;
+  const int unrolls_per_acc = max_sra_count;
+  const int multiacc_unrolls = unrolls_per_acc * acc_count;
+  const int multiacc_unrolled_lanes = simd_lanes * multiacc_unrolls;
+  const int singleacc_unrolls = unrolls_per_acc;
+  const int singleacc_unrolled_lanes = simd_lanes * singleacc_unrolls;
+
+  const uint8_t *multiacc_unroll_end = data + (length / multiacc_unrolled_lanes) * multiacc_unrolled_lanes;
+  uint32_t length_after_multiacc_unroll = length % multiacc_unrolled_lanes;
+  for (; data < multiacc_unroll_end; ) {
+    uint8x16_t accs[acc_count] = {};
+    for (int i = 0; i < unrolls_per_acc; ++i) {
+      for (int j = 0; j < acc_count; ++j, data += simd_lanes) {
+        uint8x16_t chunk = vld1q_u8(data);
+        accs[j] = vsraq_n_u8(accs[j], chunk, 7);
+      }
+    }
+    for (int j = 0; j < acc_count; ++j) {
+      result += vaddvq_u8(accs[j]);
+    }
+  }
+
+  const uint8_t *singleacc_unroll_end = data + (length_after_multiacc_unroll / singleacc_unrolled_lanes) * singleacc_unrolled_lanes;
+  uint32_t length_after_singleacc_unroll = length_after_multiacc_unroll % singleacc_unrolled_lanes;
+  for (; data < singleacc_unroll_end; ) {
+    uint8x16_t acc = {};
+    for (int i = 0; i < singleacc_unrolls; ++i, data += simd_lanes) {
+      uint8x16_t chunk = vld1q_u8(data);
+      acc = vsraq_n_u8(acc, chunk, 7);
+    }
+    result += vaddvq_u8(acc);
+  }
+
+  const uint8_t *simd_end = data + (length_after_singleacc_unroll / simd_lanes) * simd_lanes;
+  uint32_t length_after_simd = length_after_singleacc_unroll % simd_lanes;
+  uint8x16_t acc = {};
+  for (; data < simd_end; data += simd_lanes) {
+    uint8x16_t chunk = vld1q_u8(data);
+    acc = vsraq_n_u8(acc, chunk, 7);
+  }
+  result += vaddvq_u8(acc);
+
+  const uint8_t *scalar_end = data + length_after_simd;
+  for (; data < scalar_end; data += 1) {
+    result += *data >> 7;
+  }
+
+  return result + length;
+}
+
 int main() {
   size_t trials = 3;
-  size_t warm_trials = 3;
+  size_t warm_trials = 1'000'000;
+  //size_t warm_trials = 1'000;
 
   size_t N = 8000*2;
   uint8_t *input = new uint8_t[N];
@@ -95,6 +239,70 @@ int main() {
       std::cout << "ns/bytes " << double(after - before) / (len) << std::endl;
       std::cout << "GB/s " << (len)/double(after - before) << std::endl;
 
+    }
+  }
+  if (len != expected) {
+    printf("%zu %zu \n", len, expected);
+    abort();
+  }
+  std::cout << std::endl;
+
+  std::cout << "strager" << std::endl;
+  for (size_t t = 0; t < trials + warm_trials; t++) {
+    uint64_t before = nano();
+    len = utf8_length_strager(input, N);
+    uint64_t after = nano();
+    if (t >= warm_trials) {
+      std::cout << "ns/bytes " << double(after - before) / (len) << std::endl;
+      std::cout << "GB/s " << (len)/double(after - before) << std::endl;
+    }
+  }
+  if (len != expected) {
+    printf("%zu %zu \n", len, expected);
+    abort();
+  }
+  std::cout << std::endl;
+
+  std::cout << "strager sra" << std::endl;
+  for (size_t t = 0; t < trials + warm_trials; t++) {
+    uint64_t before = nano();
+    len = utf8_length_strager_sra(input, N);
+    uint64_t after = nano();
+    if (t >= warm_trials) {
+      std::cout << "ns/bytes " << double(after - before) / (len) << std::endl;
+      std::cout << "GB/s " << (len)/double(after - before) << std::endl;
+    }
+  }
+  if (len != expected) {
+    printf("%zu %zu \n", len, expected);
+    abort();
+  }
+  std::cout << std::endl;
+
+  std::cout << "strager sra unrolled" << std::endl;
+  for (size_t t = 0; t < trials + warm_trials; t++) {
+    uint64_t before = nano();
+    len = utf8_length_strager_sra_unrolled(input, N);
+    uint64_t after = nano();
+    if (t >= warm_trials) {
+      std::cout << "ns/bytes " << double(after - before) / (len) << std::endl;
+      std::cout << "GB/s " << (len)/double(after - before) << std::endl;
+    }
+  }
+  if (len != expected) {
+    printf("%zu %zu \n", len, expected);
+    abort();
+  }
+  std::cout << std::endl;
+
+  std::cout << "strager sra unrolled multiacc" << std::endl;
+  for (size_t t = 0; t < trials + warm_trials; t++) {
+    uint64_t before = nano();
+    len = utf8_length_strager_sra_unrolled_multiacc(input, N);
+    uint64_t after = nano();
+    if (t >= warm_trials) {
+      std::cout << "ns/bytes " << double(after - before) / (len) << std::endl;
+      std::cout << "GB/s " << (len)/double(after - before) << std::endl;
     }
   }
   if (len != expected) {
